@@ -41,14 +41,13 @@ rm -f results/counter-probe.txt
 available=$(IFS=,; echo "${supported[*]}")
 
 for impl in A B C; do
-    rm -f "results/perf-stat-$impl-available.txt" "results/perf-stat-$impl-available-stdout.txt" \
-          "results/perf-record-$impl-software.txt" "results/perf-record-$impl-software-stdout.txt"
+    rm -f "results/perf-stat-$impl-available.txt" "results/perf-record-$impl-software.txt"
     # Five process repetitions, each replaying five books, amortize workload setup.
     if ! perf stat -r 5 -e "$events" -- ./bench --impl "$impl" --profile \
-            > "results/perf-stat-$impl-stdout.txt" 2> "results/perf-stat-$impl.txt"; then
+            > /dev/null 2> "results/perf-stat-$impl.txt"; then
         if [[ -n "$available" ]]; then
             perf stat -r 5 -e "$available" -- ./bench --impl "$impl" --profile \
-                > "results/perf-stat-$impl-available-stdout.txt" \
+                > /dev/null \
                 2> "results/perf-stat-$impl-available.txt"
         fi
     fi
@@ -56,10 +55,10 @@ for impl in A B C; do
     # perf's binary writer can fail on WSL's Windows mount, so write in /tmp.
     data_file=$(mktemp /tmp/orderbook-perf-XXXXXX.data)
     if ! perf record -g -o "$data_file" -- ./bench --impl "$impl" --profile \
-            > "results/perf-record-$impl-stdout.txt" 2> "results/perf-record-$impl.txt"; then
+            > /dev/null 2> "results/perf-record-$impl.txt"; then
         perf record -e cpu-clock -F 499 -g -o "$data_file" -- \
             ./bench --impl "$impl" --profile \
-            > "results/perf-record-$impl-software-stdout.txt" \
+            > /dev/null \
             2> "results/perf-record-$impl-software.txt"
     fi
     perf report --stdio --no-children --call-graph none --percent-limit 1 --sort comm,dso,symbol \

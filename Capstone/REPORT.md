@@ -2,25 +2,20 @@
 
 Archit Kulkarni | 24BCS10194 | 17 October 2026
 
-## Setup and correctness
+## Setup
 
-AMD Ryzen 5 5600H, Ubuntu 26.04 under WSL2, GCC 15.2.0. Built with C++17,
-`-O2 -g -fno-omit-frame-pointer`. Collection was pinned to logical CPU 2 using
-`taskset -c 2`. The three designs and their complexities are in the README.
+Ryzen 5 5600H, Ubuntu 26.04/WSL2, GCC 15.2.0, C++17,
+`-O2 -g -fno-omit-frame-pointer`, pinned to logical CPU 2.
+Each run used seed 42: 700,746 adds, 199,278 live cancels, 99,976 BBO queries
+and 10,000 depth queries per side. The table uses five-run medians.
 
-Each timed run replayed the same seed-42 workload: 700,746 adds, 199,278 live
-cancels and 99,976 BBO queries. Both depth APIs ran another 10,000 times each.
-The table uses medians from five fresh-book runs. Workload generation is outside
-the timer; per-call clock overhead and depth queries are included in total time.
+Verification passed 20,000 operations with seed 42 and 10,000 with seed 7,
+checking every level after each operation. AddressSanitizer and
+UndefinedBehaviorSanitizer passed 10,000 operations with seed 123.
+All million-operation benchmarks produced checksum `2736274959807530309`
+and final BBO `99.99 x 2826 / 100.01 x 2307`. Raw output is in `results/`.
 
-The verifier passed 20,000 operations with seed 42 and 10,000 with seed 7,
-comparing the BBO and **all** price levels after every operation. Boundary tests
-also passed. All million-operation benchmark runs ended with checksum
-`2736274959807530309`, bid `99.99 x 2826` and ask `100.01 x 2307`.
-AddressSanitizer and UndefinedBehaviorSanitizer also passed a 10,000-operation
-verification with seed 123. Raw output is in `results/`.
-
-## Measurements
+## Results
 
 | Metric | A: map | B: sorted vector | C: indexed array |
 | --- | ---: | ---: | ---: |
@@ -35,62 +30,53 @@ verification with seed 123. Raw output is in `results/`.
 | Page faults | 16,385 | 16,858 | 28,613 |
 | dTLB-load-misses | 6,138,389 | 8,798,171 | 4,828,625 |
 
-Counters are `perf stat -r 5` means per process, with five complete replays per
-process, including setup and teardown. Per-call timers were disabled with
-`--profile`. All requested counters worked. Hardware events were multiplexed
-at about 86% running time; these are perf's scaled counts. IPC is instructions
-divided by cycles, and branch-miss percentage is misses divided by branches.
+API times include clock overhead; total time also includes depth queries and
+checksum handling, but excludes generation and book construction/destruction.
+Counters are `perf stat -r 5` means for the whole process: five book replays
+with per-call timers disabled, plus setup and teardown. All requested counters
+worked. Hardware events ran about 86% of the time; counts are perf's scaled
+values. IPC = instructions/cycles; branch miss rate = misses/branches.
 
-This is a laptop/WSL measurement, with noticeable scheduling and frequency
-variation. For example, A's timed totals ranged from 494.53 to 872.48 ms.
-The raw repeat values are included rather than treating the medians as exact
-hardware limits. Counter totals and timed totals have different scopes.
+This laptop had noticeable timing variation: A ranged from 494.53 to 872.48 ms.
+The medians should be read with that limitation. Timed totals and perf counters
+cover different amounts of work.
 
-## What the results show
+## Analysis
 
-**Latency and profiles.** C was fastest for adding and cancelling, and about
-33% faster overall than A. Its price update is a direct array access, avoiding
-a tree walk or binary search. A had the lowest measured BBO average, but its
-0.81 ns advantage over C is too small to conclude much given timer overhead
-and run variation. All three retrieve the best prices in constant time.
+**Latency.** C was fastest for add and cancel, and about 33% faster overall
+than A. It updates a price by indexing an array. B's compact price vectors
+made adds faster than A's tree searches once most levels were occupied, but
+random cancellation still searches its larger order-ID tree. A's measured
+BBO time beat C by only 0.81 ns, too small to rank confidently with these
+timers. All three find the best prices in O(1).
 
-B's add was faster than A's: once the price bands fill, most adds update an
-existing level in a compact vector. Its random cancels still search a much
-larger order-ID tree. The `perf record -g` reports support this: A spent 41.14%
-of sampled cycles in `add_order` and 27.41% in `cancel_order`; B spent 41.44%
-in cancellation and another 8.05% in tree erase rebalancing. C spent 37.69%
-in cancellation and 12.56% in hash-node insertion. C still pays for ID lookup
-and allocation even though its price storage is simple.
+**Profiles.** `perf record -g` put A's add/cancel at 41.14%/27.41% of sampled
+cycles. B spent 41.44% in cancellation and 8.05% in tree erase rebalancing.
+C spent 37.69% in cancellation and 12.56% in hash-node insertion: array price
+storage removes a search, but ID lookup and allocation still cost time.
 
-**Branches and caches.** B had the most branch misses in absolute terms
-(61.24 million), while A had the highest miss percentage. Random tree paths
-depend on prices or IDs, so the direction of each comparison is hard to predict.
-C avoids the price search and has a much lower miss rate.
+**Branches and caches.** B had the most branch misses (61.24 million); A had
+the highest miss rate. Random comparisons make tree paths hard to predict.
+C removes the price search and had the lowest rate. A's generic cache misses
+were slightly higher than B's, but the difference was below 1% and smaller
+than run variation. B clearly had the most L1 misses: its levels are compact,
+but its ID tree follows pointers through separately allocated nodes. A also
+uses tree and hash nodes. C's order slots and 80,000-byte level arrays are
+contiguous, although its ID hash table still uses nodes. It recorded the
+fewest L1, generic cache and dTLB misses, consistent with its higher IPC.
 
-A had slightly more generic cache misses than B, but their difference is below
-1% and smaller than the observed variability. B clearly had the most L1 misses.
-Its price vectors are contiguous, but its order-ID tree contains many separately
-allocated nodes, and random cancels follow pointers through those nodes. A also
-follows pointers in its price trees and ID hash table. C has contiguous order
-slots and a fixed 80,000-byte quantity array, although its hash table still uses
-nodes. It recorded the fewest L1, generic cache and dTLB misses. Its higher IPC
-is consistent with less time waiting on these accesses; IPC alone is not speed.
+**Page faults.** C had the most. Its order vector grows and copies into new
+storage, alongside hash-table allocation. Cancelled slots are reused, but
+capacity stays at its peak. This fits its allocation pattern; page faults
+alone do not establish peak memory use or disk paging.
 
-**Page faults.** C had the most. Its growing order vector needs new pages and
-can copy existing orders during growth, in addition to hash-table allocation.
-Recycling slots avoids keeping every historical order, but capacity remains
-at its high-water mark. This fits the allocation pattern; the page-fault count
-alone does not measure peak memory or prove that disk paging happened.
+**Production choice.** I would choose C for these fixed bands: small bounded
+level storage, fast updates and fewer cache misses. The slot/free-list code
+is manageable. Its weak points are allocation/rehash spikes and a possible
+5,000-tick scan when the best level empties. Average times do not establish
+tail latency or production readiness.
 
-**Production choice and next steps.** For these fixed price bands I would pick
-C. Its level storage is small and bounded, its price updates are simple, and
-the measurements show fewer cache misses. Its extra slot/free-list bookkeeping
-is manageable. However, hash rehashing, vector growth and scanning up to 5,000
-empty prices after best-level removal can still cause latency spikes. None of
-these averages establish a tail-latency guarantee.
-
-Next I would reserve capacity for the expected live-order limit, measure peak
-resident memory and p99/p99.9 latency, and test sparse books with repeated best
-cancellations. An occupancy bitmap could replace the long empty-price scan.
-A bounded order pool could reduce allocation spikes. Integer prices are already
-used; further changes should be measured before adding complexity.
+**Next steps.** Reserve order capacity, measure peak memory and p99/p99.9,
+and test sparse books with repeated best-level cancellations. An occupancy
+bitmap could shorten the scan, and a bounded pool could reduce allocations.
+Integer prices are already used.
